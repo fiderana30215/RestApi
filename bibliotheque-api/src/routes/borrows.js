@@ -7,7 +7,7 @@ const { validate } = require('../middleware/validate');
 const router = express.Router();
 
 const createSchema = z.object({
-  user_name: z.string().min(1, 'Le nom de l\'emprunteur est requis').max(200),
+  user_name: z.string().min(1, "Le nom de l'emprunteur est requis").max(200),
   book_id: z.number().int().positive(),
 });
 
@@ -15,13 +15,39 @@ const createSchema = z.object({
 router.use(authRequired);
 
 router.get('/', (req, res) => {
-  // Emprunts en cours = returned_at === null
   const list = store.borrows.filter((b) => b.returned_at === null);
   res.json({ success: true, data: list, message: 'Emprunts en cours' });
 });
 
+/**
+ * POST /api/v1/borrows
+ * NOUVEAU (Séance 6) : middleware limite 2 emprunts pour les utilisateurs free
+ */
 router.post('/', validate(createSchema), (req, res) => {
   const { user_name, book_id } = req.validated;
+
+  // ── Vérification limite emprunts (utilisateurs free) ──────────────────────
+  const currentUser = store.users.find((u) => u.id === req.user.sub);
+  if (currentUser && currentUser.subscription_status === 'free') {
+    // Compter les emprunts actifs de cet utilisateur (par user_name ou par user_id si disponible)
+    const activeCount = store.borrows.filter(
+      (b) => b.returned_at === null && b.user_name === user_name
+    ).length;
+
+    if (activeCount >= 2) {
+      return res.status(403).json({
+        success: false,
+        message: 'Limite atteinte — les membres gratuits ne peuvent emprunter que 2 livres simultanément.',
+        errors: {
+          subscription: [
+            'Passez à un abonnement premium pour des emprunts illimités (POST /api/v1/subscriptions/payment-intent).',
+          ],
+        },
+      });
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   const book = store.books.find((b) => b.id === book_id);
   if (!book) {
     return res.status(422).json({
@@ -34,15 +60,21 @@ router.post('/', validate(createSchema), (req, res) => {
     return res.status(422).json({
       success: false,
       message: 'Validation échouée',
-      errors: { book_id: ['Ce livre n\'est pas disponible.'] },
+      errors: { book_id: ["Ce livre n'est pas disponible."] },
     });
   }
+
+  // Détermine le payment_status selon l'abonnement
+  const paymentStatus =
+    currentUser?.subscription_status === 'premium' ? 'paid' : 'free';
+
   const borrow = {
     id: nextId('borrow'),
     user_name,
     book_id,
     borrowed_at: new Date().toISOString(),
     returned_at: null,
+    payment_status: paymentStatus, // NOUVEAU
   };
   store.borrows.push(borrow);
   book.available = false;

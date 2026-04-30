@@ -1,5 +1,7 @@
-// Simple in-memory data store (pour simplifier — pas besoin de BDD externe).
-// Remplaçable facilement par une vraie BDD (Prisma/SQLite) plus tard.
+// Simple in-memory data store
+// books ont maintenant: summary (TEXT nullable)
+// borrows ont maintenant: payment_status (pending/paid/free)
+// users ont maintenant: subscription_status (free/premium)
 
 const store = {
   authors: [],

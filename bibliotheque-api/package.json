@@ -1,7 +1,7 @@
 {
   "name": "bibliotheque-api",
-  "version": "1.0.0",
-  "description": "API REST de gestion d'une bibliothèque — Cours 2026",
+  "version": "2.0.0",
+  "description": "API REST de gestion d'une bibliothèque — Cours 2026 (Séance 3 + 6)",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
