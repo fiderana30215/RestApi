@@ -1,10 +1,11 @@
 openapi: '3.0.3'
 info:
   title: API Bibliothèque
-  version: '1.0.0'
+  version: '2.0.0'
   description: |
     API REST de gestion d'une bibliothèque — Cours 2026.
     Gestion des auteurs, des livres et des emprunts avec authentification JWT.
+    **Séance 6** : intégration OpenAI (résumés, recherche intelligente) et Stripe (abonnements premium).
   contact:
     name: Étudiant L3
 servers:
@@ -22,6 +23,12 @@ tags:
     description: Gestion des livres
   - name: Borrows
     description: Gestion des emprunts
+  - name: OpenAI
+    description: "Séance 6 — Résumés et recherche intelligente via IA"
+  - name: Subscriptions
+    description: "Séance 6 — Abonnements premium via Stripe"
+  - name: Webhooks
+    description: "Séance 6 — Événements Stripe (signature HMAC)"
 
 components:
   securitySchemes:
@@ -31,6 +38,7 @@ components:
       bearerFormat: JWT
 
   schemas:
+    # ── Entités existantes (Séance 3) ─────────────────────────────────────────
     Author:
       type: object
       properties:
@@ -57,6 +65,10 @@ components:
         year: { type: integer, example: 2008 }
         available: { type: boolean, example: true }
         author_id: { type: integer, example: 1 }
+        summary:
+          type: string
+          nullable: true
+          example: "Un guide incontournable sur l'écriture de code propre et maintenable."
         author: { $ref: '#/components/schemas/Author' }
 
     Borrow:
@@ -70,7 +82,12 @@ components:
           type: string
           format: date-time
           nullable: true
+        payment_status:
+          type: string
+          enum: [pending, paid, free]
+          example: free
 
+    # ── Input types (Séance 3) ─────────────────────────────────────────────────
     CreateAuthorInput:
       type: object
       required: [first_name, last_name, nationality]
@@ -130,6 +147,103 @@ components:
             email: { type: string }
             name: { type: string }
 
+    # ── Nouveaux schémas Séance 6 ──────────────────────────────────────────────
+    SummaryResponse:
+      type: object
+      description: Résumé d'un livre généré par OpenAI
+      properties:
+        book_id: { type: integer, example: 1 }
+        title: { type: string, example: Clean Code }
+        summary:
+          type: string
+          example: "Un guide incontournable sur l'écriture de code propre et maintenable, alliant théorie et pratique."
+        generated_by:
+          type: string
+          example: gemini-2.0-flash
+          description: Nom du modèle IA utilisé pour générer le résumé
+        generated_at:
+          type: string
+          format: date-time
+          description: Date et heure de génération du résumé
+
+    SmartSearchInput:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          example: "un roman japonais sur la solitude et la musique"
+          description: Requête en langage naturel — l'IA en extrait les mots-clés
+
+    SmartSearchResponse:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        query: { type: string, example: "un roman japonais sur la solitude" }
+        keywords:
+          type: array
+          items: { type: string }
+          example: ["japonais", "solitude", "roman"]
+          description: Mots-clés extraits par l'IA depuis la requête
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Book' }
+        message: { type: string, example: "2 livre(s) trouvé(s)" }
+
+    PaymentIntentResponse:
+      type: object
+      description: Réponse de création d'un PaymentIntent Stripe
+      properties:
+        client_secret:
+          type: string
+          example: pi_3abc...._secret_xyz
+          description: Secret à utiliser côté client avec Stripe.js pour finaliser le paiement
+        payment_intent_id:
+          type: string
+          example: pi_3abc....
+        amount:
+          type: integer
+          example: 500
+          description: Montant en centimes (500 = 5,00 €)
+        currency:
+          type: string
+          example: eur
+        publishable_key:
+          type: string
+          example: pk_test_...
+          description: Clé publique Stripe à utiliser côté client
+
+    SubscriptionStatusResponse:
+      type: object
+      description: Statut d'abonnement de l'utilisateur connecté
+      properties:
+        user_id: { type: integer, example: 1 }
+        email: { type: string, example: admin@biblio.local }
+        subscription_status:
+          type: string
+          enum: [free, premium]
+          example: free
+        borrow_limit:
+          type: integer
+          nullable: true
+          example: 2
+          description: "Nombre max d'emprunts simultanés (null = illimité pour premium)"
+
+    WebhookStripeInput:
+      type: object
+      description: Corps brut envoyé par Stripe (événement signé)
+      properties:
+        type:
+          type: string
+          example: payment_intent.succeeded
+        data:
+          type: object
+          properties:
+            object:
+              type: object
+              description: Objet Stripe concerné par l'événement
+
+    # ── Réponses génériques ────────────────────────────────────────────────────
     SuccessResponse:
       type: object
       properties:
@@ -150,7 +264,7 @@ components:
 
   responses:
     Unauthorized:
-      description: Non authentifié
+      description: Non authentifié — token manquant ou invalide
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -164,13 +278,22 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
+    ServiceUnavailable:
+      description: Service IA indisponible (OpenAI/Gemini/Groq)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
 
 paths:
+  # ════════════════════════════════════════════════════════════════════════════
+  # SÉANCE 3 — endpoints inchangés
+  # ════════════════════════════════════════════════════════════════════════════
+
   /auth/login:
     post:
       tags: [Auth]
       summary: Authentification
-      description: Retourne un token JWT à utiliser dans l'en-tête `Authorization: Bearer`.
+      description: "Retourne un token JWT à utiliser dans l'en-tête Authorization: Bearer."
       requestBody:
         required: true
         content:
@@ -261,8 +384,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/UpdateAuthorInput' }
       responses:
-        '200':
-          description: Auteur modifié
+        '200': { description: Auteur modifié }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/ValidationError' }
@@ -392,6 +514,9 @@ paths:
     post:
       tags: [Borrows]
       summary: Enregistrer un emprunt
+      description: |
+        Crée un nouvel emprunt. Les utilisateurs **free** sont limités à 2 emprunts simultanés.
+        Les utilisateurs **premium** ont des emprunts illimités.
       security: [{ BearerAuth: [] }]
       requestBody:
         required: true
@@ -410,6 +535,11 @@ paths:
                   data: { $ref: '#/components/schemas/Borrow' }
                   message: { type: string }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Limite d'emprunts atteinte (utilisateur free)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
         '422': { $ref: '#/components/responses/ValidationError' }
 
   /borrows/{id}/return:
@@ -436,3 +566,183 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/ValidationError' }
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # SÉANCE 6 — nouveaux endpoints OpenAI
+  # ════════════════════════════════════════════════════════════════════════════
+
+  /books/smart-search:
+    post:
+      tags: [OpenAI]
+      summary: Recherche intelligente par langage naturel
+      description: |
+        Envoie une requête en langage naturel à l'IA (OpenAI/Gemini/Groq).
+        L'IA extrait des mots-clés, qui sont ensuite utilisés pour chercher dans la base de livres.
+        **Exemple** : "un roman japonais sur la solitude" → mots-clés ["japonais", "solitude", "roman"]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SmartSearchInput' }
+      responses:
+        '200':
+          description: Résultats de recherche avec mots-clés extraits
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SmartSearchResponse' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /books/{id}/summary:
+    get:
+      tags: [OpenAI]
+      summary: Récupérer le résumé d'un livre
+      description: Retourne le résumé existant du livre. Ne déclenche pas d'appel OpenAI.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+          description: Identifiant du livre
+      responses:
+        '200':
+          description: Résumé du livre
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/SummaryResponse' }
+                  message: { type: string }
+        '404':
+          description: Livre introuvable ou résumé pas encore généré
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+    post:
+      tags: [OpenAI]
+      summary: Générer un résumé via OpenAI
+      description: |
+        Génère un résumé du livre en appelant l'API OpenAI/Gemini/Groq et le sauvegarde.
+        Si le résumé existe déjà, il est retourné directement **sans** nouvel appel à l'IA (économie de quota).
+        Retourne **503** si le service IA est indisponible.
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+          description: Identifiant du livre
+      responses:
+        '200':
+          description: Résumé généré (ou existant retourné)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/SummaryResponse' }
+                  message: { type: string, example: "Résumé généré et sauvegardé" }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # SÉANCE 6 — nouveaux endpoints Stripe
+  # ════════════════════════════════════════════════════════════════════════════
+
+  /subscriptions/payment-intent:
+    post:
+      tags: [Subscriptions]
+      summary: Créer un PaymentIntent Stripe (abonnement premium)
+      description: |
+        Crée un PaymentIntent Stripe de **5,00 € (500 centimes)** pour passer à l'abonnement premium.
+        Retourne un `client_secret` à utiliser côté client avec **Stripe.js** pour finaliser le paiement.
+        Le statut premium est activé automatiquement via le **webhook** `payment_intent.succeeded`.
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: PaymentIntent créé avec succès
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/PaymentIntentResponse' }
+                  message: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422':
+          description: Utilisateur déjà premium
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          description: Service Stripe indisponible
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /subscriptions/status:
+    get:
+      tags: [Subscriptions]
+      summary: Statut d'abonnement de l'utilisateur connecté
+      description: |
+        Retourne le statut d'abonnement (`free` ou `premium`) et la limite d'emprunts.
+        - **free** : 2 emprunts simultanés maximum
+        - **premium** : emprunts illimités (`borrow_limit: null`)
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: Statut retourné
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/SubscriptionStatusResponse' }
+                  message: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /webhooks/stripe:
+    post:
+      tags: [Webhooks]
+      summary: Recevoir les événements Stripe
+      description: |
+        Endpoint appelé automatiquement par Stripe lors d'un événement (paiement réussi, etc.).
+        **⚠️ Pas de BearerAuth JWT** — l'authentification se fait par vérification de signature HMAC-SHA256
+        via l'en-tête `Stripe-Signature`.
+
+        Événements traités :
+        - `payment_intent.succeeded` → passe l'utilisateur en **premium**
+        - `payment_intent.payment_failed` → logué (pas d'action)
+
+        Retourne toujours **200** rapidement (sinon Stripe réessaie).
+      parameters:
+        - name: Stripe-Signature
+          in: header
+          required: true
+          schema: { type: string }
+          description: "Signature HMAC envoyée par Stripe. Format : `t=timestamp,v1=signature`"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookStripeInput' }
+      responses:
+        '200':
+          description: Événement reçu et traité
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  received: { type: boolean, example: true }
+        '401':
+          description: Signature Stripe invalide ou absente
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }

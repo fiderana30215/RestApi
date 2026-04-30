@@ -77,7 +77,7 @@ function callAI(messages, maxTokens) {
     });
 
     req.on('error', function(e) { reject(new Error('Erreur réseau: ' + e.message)); });
-    req.setTimeout(30000, function() {
+    req.setTimeout(20000, function() {
       req.destroy();
       reject(new Error('Timeout — service IA indisponible'));
     });
